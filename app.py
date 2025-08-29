@@ -6,6 +6,7 @@ import threading
 import logging
 import smtplib
 import ssl
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -76,6 +77,29 @@ def save_queue_to_file():
     except Exception as e:
         logger.error(f"Error saving queue to file: {e}")
 
+# Extract timestamp references from comment text
+TIMESTAMP_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b")
+
+
+def _timestamp_to_seconds(ts: str) -> int:
+    """Convert a timestamp string (H:MM:SS or MM:SS) into total seconds."""
+    parts = [int(p) for p in ts.split(":")]
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
+
+
+def extract_timestamps(text: str, video_url: str):
+    """Return timestamps referenced in text with direct video links."""
+    timestamps = []
+    for match in TIMESTAMP_PATTERN.findall(text):
+        seconds = _timestamp_to_seconds(match)
+        delimiter = "&" if "?" in video_url else "?"
+        link = f"{video_url}{delimiter}t={seconds}s"
+        timestamps.append({"text": match, "seconds": seconds, "link": link})
+    return timestamps
+
 # Process YouTube comments - improved version based on the test script
 def get_filtered_comments(video_url, phrases):
     logger.info(f"Attempting to get comments for {video_url} with phrases: {phrases}")
@@ -101,13 +125,14 @@ def get_filtered_comments(video_url, phrases):
                 # Extract the comment ID to create a direct link
                 comment_id = comment.get('cid', '')
                 comment_link = f"{video_url}&lc={comment_id}" if comment_id else video_url
-                
+
                 filtered_comments.append({
                     'text': comment.get('text', ''),
                     'author': comment.get('author', 'Unknown'),
                     'time': comment.get('time', 'Unknown'),
                     'likes': comment.get('votes', 0),
-                    'link': comment_link
+                    'link': comment_link,
+                    'timestamps': extract_timestamps(comment.get('text', ''), video_url)
                 })
         
         logger.info(f"Successfully processed {comment_count} comments and found {len(filtered_comments)} matching comments for {video_url}")
@@ -124,323 +149,25 @@ def send_email_report(to_email, video_url, phrases, comments):
         msg["Subject"] = f"YouTube Comment Search Results: {', '.join(phrases)}"
         msg["From"] = GMAIL_USER
         msg["To"] = to_email
-        
-        # Generate HTML for comments section
-        comment_html_parts = []
-        if comments:
-            for comment in comments:
-                # Ensure author exists and is not empty before accessing index 0
-                author_initial = '?'
-                if comment.get('author'):
-                    # Handle potential empty author string
-                    if comment['author']:
-                        author_initial = comment['author'][0].upper()
-                    else:
-                        author_initial = '?' # Explicitly handle empty string case
-                
-                # Add the direct link to the comment
-                comment_link = comment.get('link', video_url)
-                
-                comment_html_parts.append(f"""
-                <div class="comment">
-                    <div class="comment-header">
-                        <div class="author-avatar">{author_initial}</div>
-                        <div class="author-name">{comment.get('author', 'Unknown')}</div>
-                    </div>
-                    <div class="comment-body">
-                        <div class="comment-text">{comment.get('text', '')}</div>
-                        <div class="comment-meta">
-                            <div class="meta-item">
-                                <span class="meta-icon"><i>&#128337;</i></span>
-                                {comment.get('time', 'Unknown')}
-                            </div>
-                            <div class="meta-item">
-                                <span class="meta-icon"><i>&#128077;</i></span>
-                                <span class="likes-count">{comment.get('likes', 0)}</span>
-                            </div>
-                            <div class="meta-item">
-                                <a href="{comment_link}" target="_blank" class="comment-link">View Comment</a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                """)
-            comments_html = ''.join(comment_html_parts)
-        else:
-            comments_html = '''
-            <div class="empty-state">
-                <div class="empty-state-icon">&#128269;</div>
-                <p>No matching comments found for your search criteria.</p>
-            </div>
-            '''
 
-        # Create HTML version of email
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>YouTube Comment Results</title>
-            <style>
-                /* Base styles */
-                body {{
-                    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-                    line-height: 1.6;
-                    color: #333;
-                    background-color: #f9f9f9;
-                    margin: 0;
-                    padding: 0;
-                }}
-                
-                .container {{
-                    max-width: 700px;
-                    margin: 0 auto;
-                    background-color: #ffffff;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-                    overflow: hidden;
-                }}
-                
-                /* Header */
-                .header {{
-                    background-color: #FF0000;
-                    color: white;
-                    padding: 25px;
-                    text-align: center;
-                }}
-                
-                .header h1 {{
-                    margin: 0;
-                    font-size: 24px;
-                    font-weight: 600;
-                }}
-                
-                /* Content */
-                .content {{
-                    padding: 25px;
-                }}
-                
-                .summary {{
-                    background-color: #f5f5f5;
-                    border-radius: 6px;
-                    padding: 15px;
-                    margin-bottom: 25px;
-                    border-left: 4px solid #FF0000;
-                }}
-                
-                .summary-item {{
-                    margin-bottom: 10px;
-                }}
-                
-                .summary-label {{
-                    font-weight: 600;
-                    color: #555;
-                    margin-right: 5px;
-                }}
-                
-                .video-link {{
-                    color: #0066cc;
-                    text-decoration: none;
-                    word-break: break-all;
-                }}
-                
-                .video-link:hover, .comment-link:hover {{
-                    text-decoration: underline;
-                }}
-                
-                .comment-link {{
-                    color: #0066cc;
-                    text-decoration: none;
-                    font-weight: 500;
-                }}
-                
-                .phrase-tag {{
-                    display: inline-block;
-                    background-color: #f0f0f0;
-                    border: 1px solid #ddd;
-                    border-radius: 16px;
-                    padding: 4px 12px;
-                    margin: 3px;
-                    font-size: 14px;
-                }}
-                
-                .comments-header {{
-                    font-size: 20px;
-                    color: #333;
-                    margin-top: 30px;
-                    margin-bottom: 15px;
-                    border-bottom: 2px solid #eee;
-                    padding-bottom: 10px;
-                }}
-                
-                /* Comment styles */
-                .comment {{
-                    margin-bottom: 20px;
-                    background-color: #fff;
-                    border-radius: 8px;
-                    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-                    overflow: hidden;
-                    transition: transform 0.2s;
-                }}
-                
-                .comment:hover {{
-                    transform: translateY(-2px);
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                }}
-                
-                .comment-header {{
-                    display: flex;
-                    align-items: center;
-                    background-color: #f8f8f8;
-                    padding: 12px 15px;
-                    border-bottom: 1px solid #eee;
-                }}
-                
-                .author-avatar {{
-                    width: 36px;
-                    height: 36px;
-                    background-color: #FF0000;
-                    border-radius: 50%;
-                    color: white;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-weight: bold;
-                    margin-right: 12px;
-                }}
-                
-                .author-name {{
-                    font-weight: 600;
-                    color: #333;
-                    flex-grow: 1;
-                }}
-                
-                .comment-body {{
-                    padding: 15px;
-                    background-color: white;
-                }}
-                
-                .comment-text {{
-                    margin-bottom: 15px;
-                    white-space: pre-wrap;
-                }}
-                
-                .comment-meta {{
-                    display: flex;
-                    color: #888;
-                    font-size: 13px;
-                    border-top: 1px solid #f0f0f0;
-                    padding-top: 10px;
-                }}
-                
-                .meta-item {{
-                    display: flex;
-                    align-items: center;
-                    margin-right: 15px;
-                }}
-                
-                .meta-icon {{
-                    margin-right: 5px;
-                    font-size: 14px;
-                }}
-                
-                .likes-count {{
-                    color: #333;
-                    font-weight: 500;
-                }}
-                
-                /* Footer */
-                .footer {{
-                    text-align: center;
-                    padding: 15px;
-                    color: #888;
-                    font-size: 13px;
-                    background-color: #f9f9f9;
-                    border-top: 1px solid #eee;
-                }}
-                
-                /* Responsive */
-                @media (max-width: 600px) {{
-                    .header {{
-                        padding: 15px;
-                    }}
-                    
-                    .content {{
-                        padding: 15px;
-                    }}
-                    
-                    .comment-header,
-                    .comment-body {{
-                        padding: 10px;
-                    }}
-                }}
-                
-                /* Empty state */
-                .empty-state {{
-                    text-align: center;
-                    padding: 40px 20px;
-                    color: #888;
-                }}
-                
-                .empty-state-icon {{
-                    font-size: 48px;
-                    margin-bottom: 15px;
-                    color: #ddd;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <div class="header">
-                    <h1>YouTube Comment Search Results</h1>
-                </div>
-                
-                <div class="content">
-                    <div class="summary">
-                        <div class="summary-item">
-                            <span class="summary-label">Video URL:</span>
-                            <a href="{video_url}" class="video-link" target="_blank">{video_url}</a>
-                        </div>
-                        
-                        <div class="summary-item">
-                            <span class="summary-label">Search Phrases:</span>
-                            <div style="display: inline-block;">
-                                {''.join([f'<span class="phrase-tag">{phrase}</span>' for phrase in phrases])}
-                            </div>
-                        </div>
-                        
-                        <div class="summary-item">
-                            <span class="summary-label">Matching Comments:</span>
-                            <strong>{len(comments)}</strong>
-                        </div>
-                    </div>
-                    
-                    <div class="comments-header">Results</div>
-                    
-                    {comments_html}
-                </div>
-                
-                <div class="footer">
-                    This report was generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-        
-        # Attach HTML content
+        template = app.jinja_env.get_template("email_report.html")
+        html = template.render(
+            video_url=video_url,
+            phrases=phrases,
+            comments=comments,
+            generated_on=datetime.now().strftime('%B %d, %Y at %I:%M %p'),
+        )
+
         part = MIMEText(html, "html")
         msg.attach(part)
-        
-        # Create secure connection with Gmail's SMTP server
+
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
             server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
             server.sendmail(
                 GMAIL_USER, to_email, msg.as_string()
             )
-        
+
         logger.info(f"Email sent successfully to {to_email} for {video_url}")
         return True
     except Exception as e:
