@@ -6,6 +6,7 @@ import threading
 import logging
 import smtplib
 import ssl
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
@@ -76,6 +77,29 @@ def save_queue_to_file():
     except Exception as e:
         logger.error(f"Error saving queue to file: {e}")
 
+# Extract timestamp references from comment text
+TIMESTAMP_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b")
+
+
+def _timestamp_to_seconds(ts: str) -> int:
+    """Convert a timestamp string (H:MM:SS or MM:SS) into total seconds."""
+    parts = [int(p) for p in ts.split(":")]
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
+
+
+def extract_timestamps(text: str, video_url: str):
+    """Return timestamps referenced in text with direct video links."""
+    timestamps = []
+    for match in TIMESTAMP_PATTERN.findall(text):
+        seconds = _timestamp_to_seconds(match)
+        delimiter = "&" if "?" in video_url else "?"
+        link = f"{video_url}{delimiter}t={seconds}s"
+        timestamps.append({"text": match, "seconds": seconds, "link": link})
+    return timestamps
+
 # Process YouTube comments - improved version based on the test script
 def get_filtered_comments(video_url, phrases):
     logger.info(f"Attempting to get comments for {video_url} with phrases: {phrases}")
@@ -101,13 +125,14 @@ def get_filtered_comments(video_url, phrases):
                 # Extract the comment ID to create a direct link
                 comment_id = comment.get('cid', '')
                 comment_link = f"{video_url}&lc={comment_id}" if comment_id else video_url
-                
+
                 filtered_comments.append({
                     'text': comment.get('text', ''),
                     'author': comment.get('author', 'Unknown'),
                     'time': comment.get('time', 'Unknown'),
                     'likes': comment.get('votes', 0),
-                    'link': comment_link
+                    'link': comment_link,
+                    'timestamps': extract_timestamps(comment.get('text', ''), video_url)
                 })
         
         logger.info(f"Successfully processed {comment_count} comments and found {len(filtered_comments)} matching comments for {video_url}")
@@ -140,7 +165,11 @@ def send_email_report(to_email, video_url, phrases, comments):
                 
                 # Add the direct link to the comment
                 comment_link = comment.get('link', video_url)
-                
+                timestamp_links_html = ''.join(
+                    f'<div class="meta-item"><a href="{ts["link"]}" target="_blank" class="timestamp-link">{ts["text"]}</a></div>'
+                    for ts in comment.get('timestamps', [])
+                )
+
                 comment_html_parts.append(f"""
                 <div class="comment">
                     <div class="comment-header">
@@ -158,6 +187,7 @@ def send_email_report(to_email, video_url, phrases, comments):
                                 <span class="meta-icon"><i>&#128077;</i></span>
                                 <span class="likes-count">{comment.get('likes', 0)}</span>
                             </div>
+                            {timestamp_links_html}
                             <div class="meta-item">
                                 <a href="{comment_link}" target="_blank" class="comment-link">View Comment</a>
                             </div>

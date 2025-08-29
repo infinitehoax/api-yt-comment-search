@@ -1,6 +1,6 @@
 # YouTube Comment Retriever and Notifier
 
-This application retrieves YouTube comments that contain specific phrases and sends the results via email using Gmail SMTP.
+This application retrieves YouTube comments that contain specific phrases and sends the results via email using Gmail SMTP. Comments that mention video timestamps (e.g., `1:23` or `10:05:30`) are now detected and returned with direct links to those moments in the video.
 
 ## Installation
 
